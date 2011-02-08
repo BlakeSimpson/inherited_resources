@@ -227,8 +227,24 @@ module InheritedResources
       # Initialize resources class accessors and set their default values.
       #
       def initialize_resources_class_accessors! #:nodoc:
-        # Initialize resource class
+        # First priority is the namespaced modek, e.g. User::Group
         self.resource_class = begin
+          namespaced_class = self.name.sub(/Controller/, '').singularize
+          namespaced_class.constantize
+        rescue NameError
+          nil
+        end
+
+        # Second priority the camelcased c, i.e. UserGroup
+        self.resource_class ||= begin
+          camelcased_class = self.name.sub(/Controller/, '').gsub('::', '').singularize
+          camelcased_class.constantize
+        rescue NameError
+          nil
+        end
+
+        # Otherwise use the Group class, or fail
+        self.resource_class ||= begin
           class_name = self.controller_name.classify
           class_name.constantize
         rescue NameError => e
@@ -236,9 +252,16 @@ module InheritedResources
           nil
         end
 
+        self.parents_symbols = self.parents_symbols.try(:dup) || []
+
         # Initialize resources configuration hash
-        self.resources_configuration ||= {}
-        config = self.resources_configuration[:self] = {}
+        self.resources_configuration = self.resources_configuration.try(:dup) || {}
+        self.resources_configuration.each do |key, value|
+          next unless value.is_a?(Hash) || value.is_a?(Array)
+          self.resources_configuration[key] = value.dup
+        end
+
+        config = (self.resources_configuration[:self] ||= {})
         config[:collection_name] = self.controller_name.to_sym
         config[:instance_name]   = self.controller_name.singularize.to_sym
 
@@ -249,9 +272,16 @@ module InheritedResources
         namespaces = self.controller_path.split('/')[0..-2]
         config[:route_prefix] = namespaces.join('_') unless namespaces.empty?
 
+        # Deal with default request parameters in namespaced controllers, e.g.
+        # Forum::Thread#create will properly pick up the request parameter
+        # which will be forum_thread, and not thread
+        # Additionally make this work orthogonally with instance_name
+        config[:request_name] = self.resource_class.to_s.underscore.gsub('/', '_')
+
         # Initialize polymorphic, singleton, scopes and belongs_to parameters
-        self.parents_symbols ||= []
-        self.resources_configuration[:polymorphic] ||= { :symbols => [], :optional => false }
+        polymorphic = self.resources_configuration[:polymorphic] || { :symbols => [], :optional => false }
+        polymorphic[:symbols] = polymorphic[:symbols].dup
+        self.resources_configuration[:polymorphic] = polymorphic
       end
 
       # Hook called on inheritance.
